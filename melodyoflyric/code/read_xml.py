@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 # read_xml.py
 # David Prager Branner
-# 20141024
+# 20141026
 
 """Open and analyze a MusicXML file."""
 
@@ -12,12 +12,13 @@ import lxml.etree
 import utils as U
 
 def main(filename=os.path.join(
-        '..', 'data', 'sheu_ityng_pyiparshyng_20141009.xml')):
-    xml_notes = get_notes(filename)
-    note_attr_list = [get_note_attrs(xml_note) for xml_note in xml_notes]
-    if check_consistency(note_attr_list):
+        '..', 'data', 'sheu_ityng_pyiparshyng_20141025.xml')):
+    xml_notes, divisions = get_notes(filename)
+    note_attr_list = [
+            get_note_attrs(xml_note, divisions) for xml_note in xml_notes]
+    if U.check_consistency(note_attr_list):
         syllables = get_syllables(note_attr_list)
-    return syllables
+    return syllables, divisions
 
 def get_notes(filename):
     """Return list of 'note' elements from MusicXML file."""
@@ -31,21 +32,13 @@ def get_notes(filename):
         exc_type, exc_value, exc_traceback = sys.exc_info()
         traceback.print_exception(exc_type, exc_value, exc_traceback)
     xml_notes = root.xpath('//note')
-    return xml_notes
+    divisions = root.xpath('//divisions')
+    if len(divisions) > 1:
+        raise Exception('<divisions> element is of cardinality {}.'.
+                format(len(divisions)))
+    return xml_notes, int(divisions[0].text)
 
-def display_notes(xml_notes):
-    """Print all subitems of all notes."""
-    for note in notes:
-        for item in note:
-            if not item:
-                continue
-            print('  item: {}; subitems: {}'.format(item, list(item)))
-            for subitem in item:
-                print('    subitem: {}'.format(subitem))
-                for subsubitem in subitem:
-                    print('      subsubitem: {}'.format(subsubitem))
-
-def get_note_attrs(xml_note):
+def get_note_attrs(xml_note, divisions):
     """For a given note return the elements we need."""
     note_attrs = {}
     for child in xml_note.getchildren():
@@ -63,27 +56,13 @@ def get_note_attrs(xml_note):
         elif child.tag == 'rest':
             note_attrs['rest'] = True
         elif child.tag == 'duration':
-            note_attrs['duration'] = int(child.text)
+            note_attrs['duration'] = int(child.text) / divisions
         elif child.tag == 'notations':
             note_attrs['tied'] = any([True for i in child if i.tag == 'tied'])
         elif child.tag == 'lyric':
             lyric_number = child.items()[0][1]
             note_attrs['lyric_' + lyric_number] = {i.tag: i.text for i in child}
     return note_attrs
-
-def check_consistency(note_attr_list):
-    """Check that certain known problems do not occur (Not yet complete.)"""
-    consistency = True
-    for note_attr in note_attr_list:
-        if 'pitch_data' not in note_attr and 'rest' not in note_attr:
-            print('Neither pitch_data nor rest found in {}.'.format(note_attr))
-            consistency = False
-        elif 'pitch_data' in note_attr and 'rest' in note_attr:
-            print('Both pitch_data and rest found in {}.'.format(note_attr))
-            consistency = False
-        # Also, no "tied" in isolation and lyric only at start of "tied" chain.
-        # Does every note have duration?
-    return consistency
 
 def get_syllables(note_attr_list):
     """From list of note-by-note dictionaries produce list of syllables."""
@@ -103,15 +82,16 @@ def get_syllables(note_attr_list):
                 # Is last note's pitch same as pitch of current note?
                 if note_attrs.get('pitch_data') == last_note:
                     # Supplement last note's length and discard current.
-                    syllables = increment_duration(syllables, note_attrs)
+                    syllables = U.increment_duration(syllables, note_attrs)
                 else:
                     # Tied but not to previous note; must be to next note.
                     # Should therefore appear as new syllable.
                     if 'lyric_1' not in note_attrs:
-                        syllables[-1][1].append(note_attrs)
+                        syllables[-1][2].append(note_attrs)
                     else:
-                        syllables = append_syllable(syllables, 
-                                note_attrs.pop('lyric_1')['text'], note_attrs)
+                        lyric = note_attrs.pop('lyric_1')
+                        syllables = U.append_syllable(syllables, 
+                                lyric['text'], lyric['syllabic'], note_attrs)
                     last_note = note_attrs.get('pitch_data')
             else:
                 # Not tied. 
@@ -120,10 +100,11 @@ def get_syllables(note_attr_list):
                 # Pop current syllable; deal with lyric_1 by default.
                 # But if no lyric is present, append note to previous syllable.
                 if 'lyric_1' not in note_attrs:
-                    syllables[-1][1].append(note_attrs)
+                    syllables[-1][2].append(note_attrs)
                 else:
-                    syllables = append_syllable(syllables, 
-                            note_attrs.pop('lyric_1')['text'], note_attrs)
+                    lyric = note_attrs.pop('lyric_1')
+                    syllables = U.append_syllable(syllables, 
+                            lyric['text'], lyric['syllabic'], note_attrs)
                 # Next time last_note is examined it should never match.
                 last_note = 'impossible starting value'
         else:
@@ -132,20 +113,11 @@ def get_syllables(note_attr_list):
             # If previous note was rest, 
             # increase its value and do not append this one.
             if last_note == None:
-                syllables = increment_duration(syllables, note_attrs)
+                syllables = U.increment_duration(syllables, note_attrs)
             else:
-                syllables = append_syllable(syllables, value, note_attrs)
+                syllables = U.append_syllable(
+                        syllables, value, value, note_attrs)
                 last_note = value
-    return syllables
-
-def append_syllable(syllables, value, note_attrs):
-    """Append value and note_attrs to syllabl.es"""
-    syllables.append((value, [note_attrs]))
-    return syllables
-
-def increment_duration(syllables, note_attrs):
-    """Combine the duration of current note to previous note."""
-    syllables[-1][1][-1]['duration'] += note_attrs['duration']
     return syllables
 
 def display_children(notes):
@@ -166,3 +138,16 @@ def display_children(notes):
                             format(grandchild[0], grandchild[1]), 
                             end='\t')
             print()
+
+def display_notes(xml_notes):
+    """Print all subitems of all notes. (Used for early debugging.)"""
+    for note in notes:
+        for item in note:
+            if not item:
+                continue
+            print('  item: {}; subitems: {}'.format(item, list(item)))
+            for subitem in item:
+                print('    subitem: {}'.format(subitem))
+                for subsubitem in subitem:
+                    print('      subsubitem: {}'.format(subsubitem))
+
